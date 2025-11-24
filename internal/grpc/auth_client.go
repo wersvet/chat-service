@@ -30,13 +30,13 @@ func (a *AuthClient) ValidateToken(ctx context.Context, token string) (int, erro
 }
 
 // GetUser fetches user info from auth-service.
-func (a *AuthClient) GetUser(ctx context.Context, userID int) (*authpb.User, error) {
+func (a *AuthClient) GetUser(ctx context.Context, userID int) (*authpb.GetUserResponse, error) {
 	resp, err := a.client.GetUser(ctx, &authpb.GetUserRequest{UserId: int64(userID)})
 	if err != nil {
 		return nil, err
 	}
-	if resp.GetUser() == nil {
+	if resp == nil || resp.GetId() == 0 {
 		return nil, errors.New("user not found")
 	}
-	return resp.GetUser(), nil
+	return resp, nil
 }

@@ -8,8 +8,8 @@ import (
 	grpc "google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	authpb "github.com/wersvet/chat_1/proto/auth"
-	userpb "github.com/wersvet/user-service/proto/user"
+	authpb "chat-service/proto/auth"
+	userpb "chat-service/proto/user"
 
 	"chat-service/internal/db"
 	grpcclient "chat-service/internal/grpc"
@@ -45,12 +45,16 @@ func main() {
 
 	chatRepo := repositories.NewChatRepo(database)
 	messageRepo := repositories.NewMessageRepo(database)
+	groupRepo := repositories.NewGroupRepo(database)
+	groupMessageRepo := repositories.NewGroupMessageRepo(database)
 
 	hub := ws.NewHub()
 
-	chatHandler := handlers.NewChatHandler(chatRepo, messageRepo, userClient, hub)
+	chatHandler := handlers.NewChatHandler(chatRepo, messageRepo, userClient, groupRepo, hub)
+	groupHandler := handlers.NewGroupHandler(groupRepo, groupMessageRepo, userClient, hub)
 
 	chatWS := ws.NewChatWebSocketHandler(hub, chatRepo, authClient)
+	groupWS := ws.NewGroupWebSocketHandler(hub, groupRepo, authClient)
 
 	router := gin.Default()
 
@@ -67,7 +71,14 @@ func main() {
 	router.DELETE("/chats/:chat_id/messages/:message_id/all", authMiddleware, chatHandler.DeleteMessageForAll)
 	router.DELETE("/chats/:chat_id/me", authMiddleware, chatHandler.DeleteChatForMe)
 
+	router.POST("/groups", authMiddleware, groupHandler.CreateGroup)
+	router.GET("/groups", authMiddleware, groupHandler.ListGroups)
+	router.GET("/groups/:group_id/messages", authMiddleware, groupHandler.GetGroupMessages)
+	router.POST("/groups/:group_id/messages", authMiddleware, groupHandler.PostGroupMessage)
+	router.DELETE("/groups/:group_id/messages/:message_id/all", authMiddleware, groupHandler.DeleteGroupMessageForAll)
+
 	router.GET("/ws/chats/:chat_id", chatWS.Handle)
+	router.GET("/ws/groups/:group_id", groupWS.Handle)
 
 	port := getEnv("PORT", "8083")
 	if err := router.Run(":" + port); err != nil {

@@ -19,15 +19,17 @@ type ChatHandler struct {
 	chatRepo    repositories.ChatRepository
 	messageRepo repositories.MessageRepository
 	userClient  *grpcclient.UserClient
+	groupRepo   repositories.GroupRepository
 	hub         *ws.Hub
 }
 
 // NewChatHandler builds a ChatHandler.
-func NewChatHandler(chatRepo repositories.ChatRepository, messageRepo repositories.MessageRepository, userClient *grpcclient.UserClient, hub *ws.Hub) *ChatHandler {
+func NewChatHandler(chatRepo repositories.ChatRepository, messageRepo repositories.MessageRepository, userClient *grpcclient.UserClient, groupRepo repositories.GroupRepository, hub *ws.Hub) *ChatHandler {
 	return &ChatHandler{
 		chatRepo:    chatRepo,
 		messageRepo: messageRepo,
 		userClient:  userClient,
+		groupRepo:   groupRepo,
 		hub:         hub,
 	}
 }
@@ -42,36 +44,59 @@ func (h *ChatHandler) ListChats(c *gin.Context) {
 		return
 	}
 
+	groups, err := h.groupRepo.ListGroupsForUser(c.Request.Context(), userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load groups"})
+		return
+	}
+
 	friendIDs := make([]int, 0, len(chats))
 	for _, chat := range chats {
 		friendIDs = append(friendIDs, chat.FriendID)
 	}
 
-	users, err := h.userClient.BulkUsers(c.Request.Context(), friendIDs)
-	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to load user info"})
-		return
-	}
-
 	usernameByID := map[int]string{}
-	for _, u := range users {
-		usernameByID[int(u.GetId())] = u.GetUsername()
+	if len(friendIDs) > 0 {
+		users, err := h.userClient.BulkUsers(c.Request.Context(), friendIDs)
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to load user info"})
+			return
+		}
+
+		for _, u := range users {
+			usernameByID[int(u.GetId())] = u.GetUsername()
+		}
 	}
 
 	type chatResponse struct {
-		ChatID         int       `json:"chat_id"`
-		FriendID       int       `json:"friend_id"`
+		Type           string    `json:"type"`
+		ChatID         int       `json:"chat_id,omitempty"`
+		FriendID       int       `json:"friend_id,omitempty"`
 		FriendUsername string    `json:"friend_username,omitempty"`
+		GroupID        int       `json:"group_id,omitempty"`
+		Name           string    `json:"name,omitempty"`
+		OwnerID        int       `json:"owner_id,omitempty"`
 		CreatedAt      time.Time `json:"created_at"`
 	}
 
-	responses := make([]chatResponse, 0, len(chats))
+	responses := make([]chatResponse, 0, len(chats)+len(groups))
 	for _, chat := range chats {
 		responses = append(responses, chatResponse{
+			Type:           "private",
 			ChatID:         chat.ChatID,
 			FriendID:       chat.FriendID,
 			FriendUsername: usernameByID[chat.FriendID],
 			CreatedAt:      chat.Created,
+		})
+	}
+
+	for _, g := range groups {
+		responses = append(responses, chatResponse{
+			Type:      "group",
+			GroupID:   g.ID,
+			Name:      g.Name,
+			OwnerID:   g.OwnerID,
+			CreatedAt: g.CreatedAt,
 		})
 	}
 

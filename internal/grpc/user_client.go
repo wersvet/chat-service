@@ -23,25 +23,25 @@ func (u *UserClient) AreFriends(ctx context.Context, userID, friendID int) (bool
 	if err != nil {
 		return false, err
 	}
-	return resp.GetFriends(), nil
+	return resp.GetAreFriends(), nil
 }
 
 // GetUser retrieves user details.
-func (u *UserClient) GetUser(ctx context.Context, userID int) (*userpb.User, error) {
+func (u *UserClient) GetUser(ctx context.Context, userID int) (*userpb.GetUserResponse, error) {
 	resp, err := u.client.GetUser(ctx, &userpb.GetUserRequest{UserId: int64(userID)})
 	if err != nil {
 		return nil, err
 	}
-	if resp.GetUser() == nil {
+	if resp == nil || resp.GetId() == 0 {
 		return nil, errors.New("user not found")
 	}
-	return resp.GetUser(), nil
+	return resp, nil
 }
 
 // BulkUsers fetches multiple users in one call.
-func (u *UserClient) BulkUsers(ctx context.Context, ids []int) ([]*userpb.User, error) {
+func (u *UserClient) BulkUsers(ctx context.Context, ids []int) ([]*userpb.GetUserResponse, error) {
 	if len(ids) == 0 {
-		return []*userpb.User{}, nil
+		return []*userpb.GetUserResponse{}, nil
 	}
 	id64s := make([]int64, 0, len(ids))
 	for _, id := range ids {

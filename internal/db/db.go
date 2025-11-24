@@ -26,10 +26,6 @@ func Connect() (*sqlx.DB, error) {
 
 func runMigrations(db *sqlx.DB) error {
 	migrations := []string{
-		`DROP TABLE IF EXISTS group_members;`,
-		`DROP TABLE IF EXISTS groups;`,
-		`DROP TABLE IF EXISTS chat_members;`,
-		`DROP TABLE IF EXISTS messages;`,
 		`CREATE TABLE IF NOT EXISTS chats (
             id SERIAL PRIMARY KEY,
             user1_id INT NOT NULL,
@@ -52,6 +48,25 @@ func runMigrations(db *sqlx.DB) error {
             user_id INT NOT NULL,
             hidden BOOLEAN DEFAULT TRUE,
             PRIMARY KEY(chat_id, user_id)
+        );`,
+		`CREATE TABLE IF NOT EXISTS groups (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            owner_id INT NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        );`,
+		`CREATE TABLE IF NOT EXISTS group_members (
+            group_id INT NOT NULL REFERENCES groups(id),
+            user_id INT NOT NULL,
+            PRIMARY KEY (group_id, user_id)
+        );`,
+		`CREATE TABLE IF NOT EXISTS group_messages (
+            id SERIAL PRIMARY KEY,
+            group_id INT NOT NULL REFERENCES groups(id),
+            sender_id INT NOT NULL,
+            content TEXT NOT NULL,
+            deleted_for_all BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMPTZ DEFAULT NOW()
         );`,
 	}
 
