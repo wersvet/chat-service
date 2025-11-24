@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	authpb "github.com/wersvet/chat_1/proto/auth"
+	authpb "chat-service/pb/auth"
 )
 
 // AuthClient wraps the auth-service gRPC client.

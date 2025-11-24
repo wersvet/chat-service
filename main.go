@@ -8,8 +8,8 @@ import (
 	grpc "google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	authpb "chat-service/proto/auth"
-	userpb "chat-service/proto/user"
+	authpb "chat-service/pb/auth"
+	userpb "chat-service/pb/user"
 
 	"chat-service/internal/db"
 	grpcclient "chat-service/internal/grpc"

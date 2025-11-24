@@ -1,10 +1,9 @@
 package grpc
 
 import (
+	userpb "chat-service/pb/user"
 	"context"
 	"errors"
-
-	userpb "github.com/wersvet/user-service/proto/user"
 )
 
 // UserClient wraps the user-service gRPC client.

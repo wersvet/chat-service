@@ -7,8 +7,6 @@ require (
 	github.com/gorilla/websocket v1.5.1
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/lib/pq v1.10.9
-	github.com/wersvet/chat_1/proto/auth v0.0.0
-	github.com/wersvet/user-service/proto/user v0.0.0
 	google.golang.org/grpc v1.64.0
 )
 
