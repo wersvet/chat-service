@@ -7,10 +7,10 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gin-gonic/gin"
+
 	grpcclient "chat-service/internal/grpc"
 	"chat-service/internal/repositories"
-
-	"github.com/gin-gonic/gin"
 )
 
 // GroupWebSocketHandler handles group websocket connections.

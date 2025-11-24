@@ -1,9 +1,10 @@
 package grpc
 
 import (
-	userpb "chat-service/pb/user"
 	"context"
 	"errors"
+
+	userpb "chat-service/pb/user"
 )
 
 // UserClient wraps the user-service gRPC client.
@@ -22,7 +23,7 @@ func (u *UserClient) AreFriends(ctx context.Context, userID, friendID int) (bool
 	if err != nil {
 		return false, err
 	}
-	return resp.GetAreFriends(), nil
+	return resp.AreFriends, nil
 }
 
 // GetUser retrieves user details.
@@ -31,7 +32,7 @@ func (u *UserClient) GetUser(ctx context.Context, userID int) (*userpb.GetUserRe
 	if err != nil {
 		return nil, err
 	}
-	if resp == nil || resp.GetId() == 0 {
+	if resp == nil || resp.Id == 0 {
 		return nil, errors.New("user not found")
 	}
 	return resp, nil
@@ -51,5 +52,5 @@ func (u *UserClient) BulkUsers(ctx context.Context, ids []int) ([]*userpb.GetUse
 	if err != nil {
 		return nil, err
 	}
-	return resp.GetUsers(), nil
+	return resp.Users, nil
 }
