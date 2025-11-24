@@ -64,7 +64,7 @@ func (h *ChatHandler) ListChats(c *gin.Context) {
 		}
 
 		for _, u := range users {
-			usernameByID[int(u.GetId())] = u.GetUsername()
+			usernameByID[int(u.Id)] = u.Username
 		}
 	}
 
@@ -179,7 +179,7 @@ func (h *ChatHandler) GetChatMessages(c *gin.Context) {
 	}
 	senderNames := map[int]string{}
 	for _, u := range users {
-		senderNames[int(u.GetId())] = u.GetUsername()
+		senderNames[int(u.Id)] = u.Username
 	}
 
 	type messageResponse struct {

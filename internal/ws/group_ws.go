@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/gorilla/websocket"
 
 	grpcclient "chat-service/internal/grpc"
 	"chat-service/internal/repositories"

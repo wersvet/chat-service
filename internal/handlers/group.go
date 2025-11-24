@@ -114,7 +114,7 @@ func (h *GroupHandler) GetGroupMessages(c *gin.Context) {
 			return
 		}
 		for _, u := range users {
-			usernameByID[int(u.GetId())] = u.GetUsername()
+			usernameByID[int(u.Id)] = u.Username
 		}
 	}
 
