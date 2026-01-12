@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
 
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	grpc "google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
@@ -15,11 +19,22 @@ import (
 	grpcclient "chat-service/internal/grpc"
 	"chat-service/internal/handlers"
 	"chat-service/internal/middleware"
+	"chat-service/internal/observability"
 	"chat-service/internal/repositories"
 	"chat-service/internal/ws"
 )
 
 func main() {
+	shutdown, err := observability.InitTracerProvider(context.Background(), "chat-service")
+	if err != nil {
+		log.Fatalf("failed to initialize tracing: %v", err)
+	}
+	defer func() {
+		if err := shutdown(context.Background()); err != nil {
+			log.Printf("failed to shutdown tracing: %v", err)
+		}
+	}()
+
 	database, err := db.Connect()
 	if err != nil {
 		log.Fatalf("failed to connect to db: %v", err)
@@ -28,13 +43,21 @@ func main() {
 	authAddr := getEnv("AUTH_GRPC_ADDR", "localhost:8084")
 	userAddr := getEnv("USER_GRPC_ADDR", "localhost:8085")
 
-	authConn, err := grpc.Dial(authAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	authConn, err := grpc.Dial(
+		authAddr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithUnaryInterceptor(otelgrpc.UnaryClientInterceptor()),
+	)
 	if err != nil {
 		log.Fatalf("failed to connect to auth grpc: %v", err)
 	}
 	defer authConn.Close()
 
-	userConn, err := grpc.Dial(userAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	userConn, err := grpc.Dial(
+		userAddr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithUnaryInterceptor(otelgrpc.UnaryClientInterceptor()),
+	)
 	if err != nil {
 		log.Fatalf("failed to connect to user grpc: %v", err)
 	}
@@ -48,6 +71,22 @@ func main() {
 	groupRepo := repositories.NewGroupRepo(database)
 	groupMessageRepo := repositories.NewGroupMessageRepo(database)
 
+	amqpURL := getEnv("AMQP_URL", "")
+	amqpExchange := getEnv("AMQP_EXCHANGE", "app.logs")
+	if amqpURL != "" {
+		publisher, err := observability.NewAMQPPublisher(amqpURL, amqpExchange)
+		if err != nil {
+			log.Printf("failed to connect to amqp: %v", err)
+		} else {
+			observability.SetPublisher(publisher)
+			defer func() {
+				if err := publisher.Close(); err != nil {
+					log.Printf("failed to close amqp publisher: %v", err)
+				}
+			}()
+		}
+	}
+
 	hub := ws.NewHub()
 
 	chatHandler := handlers.NewChatHandler(chatRepo, messageRepo, userClient, groupRepo, hub)
@@ -60,8 +99,12 @@ func main() {
 
 	// middlewares
 	router.Use(gin.Recovery())
+	router.Use(otelgin.Middleware("chat-service"))
+	router.Use(observability.HTTPMetricsMiddleware())
 
 	authMiddleware := middleware.AuthMiddleware(authClient)
+
+	router.GET("/metrics", gin.WrapH(promhttp.Handler()))
 
 	router.GET("/chats", authMiddleware, chatHandler.ListChats)
 	router.POST("/chats/start", authMiddleware, chatHandler.StartChat)

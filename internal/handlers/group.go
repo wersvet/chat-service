@@ -6,9 +6,10 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel/trace"
 
-	grpcclient "chat-service/internal/grpc"
 	"chat-service/internal/models"
+	"chat-service/internal/observability"
 	"chat-service/internal/repositories"
 	"chat-service/internal/ws"
 )
@@ -17,12 +18,12 @@ import (
 type GroupHandler struct {
 	groupRepo   repositories.GroupRepository
 	messageRepo repositories.GroupMessageRepository
-	userClient  *grpcclient.UserClient
+	userClient  userClient
 	hub         *ws.Hub
 }
 
 // NewGroupHandler constructs a GroupHandler.
-func NewGroupHandler(groupRepo repositories.GroupRepository, messageRepo repositories.GroupMessageRepository, userClient *grpcclient.UserClient, hub *ws.Hub) *GroupHandler {
+func NewGroupHandler(groupRepo repositories.GroupRepository, messageRepo repositories.GroupMessageRepository, userClient userClient, hub *ws.Hub) *GroupHandler {
 	return &GroupHandler{
 		groupRepo:   groupRepo,
 		messageRepo: messageRepo,
@@ -40,6 +41,7 @@ func (h *GroupHandler) CreateGroup(c *gin.Context) {
 		MemberIDs []int  `json:"member_ids"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
+		h.publishGroupCreateAudit(c, 0, nil, http.StatusBadRequest, false, err.Error())
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -47,6 +49,7 @@ func (h *GroupHandler) CreateGroup(c *gin.Context) {
 	// Validate members exist via user-service
 	if len(req.MemberIDs) > 0 {
 		if _, err := h.userClient.BulkUsers(c.Request.Context(), req.MemberIDs); err != nil {
+			h.publishGroupCreateAudit(c, 0, req.MemberIDs, http.StatusBadGateway, false, "failed to validate members")
 			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to validate members"})
 			return
 		}
@@ -54,10 +57,12 @@ func (h *GroupHandler) CreateGroup(c *gin.Context) {
 
 	group, err := h.groupRepo.CreateGroup(c.Request.Context(), userID, req.Name, req.MemberIDs)
 	if err != nil {
+		h.publishGroupCreateAudit(c, 0, req.MemberIDs, http.StatusInternalServerError, false, "could not create group")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not create group"})
 		return
 	}
 
+	h.publishGroupCreateAudit(c, group.ID, req.MemberIDs, http.StatusCreated, true, "")
 	c.JSON(http.StatusCreated, gin.H{"group_id": group.ID})
 }
 
@@ -215,6 +220,41 @@ func (h *GroupHandler) DeleteGroupMessageForAll(c *gin.Context) {
 
 	h.hub.BroadcastGroupDeletion(groupID, messageID)
 	c.Status(http.StatusNoContent)
+}
+
+func (h *GroupHandler) publishGroupCreateAudit(c *gin.Context, groupID int, memberIDs []int, status int, ok bool, errMsg string) {
+	deviceID := observability.DeviceIDFromRequest(c.Request)
+	requestID := observability.RequestIDFromRequest(c.Request)
+	span := trace.SpanFromContext(c.Request.Context())
+	traceID := span.SpanContext().TraceID().String()
+
+	payload := map[string]interface{}{
+		"actor": map[string]interface{}{
+			"user_id":   c.GetInt("userID"),
+			"device_id": deviceID,
+		},
+		"action": "groups.create",
+		"target": map[string]interface{}{
+			"group_id":   groupID,
+			"member_ids": memberIDs,
+		},
+		"http": map[string]interface{}{
+			"method": c.Request.Method,
+			"path":   c.FullPath(),
+			"status": status,
+		},
+		"result": map[string]interface{}{
+			"ok":    ok,
+			"error": errMsg,
+		},
+	}
+
+	headers := observability.BuildHeaders(requestID, traceID)
+	_ = observability.PublishEvent(c.Request.Context(), "audit_events.groups", observability.EventEnvelope{
+		EventType: "audit_events",
+		EventName: "groups.create",
+		Payload:   payload,
+	}, headers)
 }
 
 func parseGroupIDs(c *gin.Context) (int, int, bool) {
