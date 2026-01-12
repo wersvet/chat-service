@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
@@ -8,23 +9,28 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	grpcclient "chat-service/internal/grpc"
 	"chat-service/internal/models"
 	"chat-service/internal/repositories"
 	"chat-service/internal/ws"
+	userpb "chat-service/pb/user"
 )
+
+type userClient interface {
+	AreFriends(ctx context.Context, userID, friendID int) (bool, error)
+	BulkUsers(ctx context.Context, ids []int) ([]*userpb.GetUserResponse, error)
+}
 
 // ChatHandler manages private chat endpoints.
 type ChatHandler struct {
 	chatRepo    repositories.ChatRepository
 	messageRepo repositories.MessageRepository
-	userClient  *grpcclient.UserClient
+	userClient  userClient
 	groupRepo   repositories.GroupRepository
 	hub         *ws.Hub
 }
 
 // NewChatHandler builds a ChatHandler.
-func NewChatHandler(chatRepo repositories.ChatRepository, messageRepo repositories.MessageRepository, userClient *grpcclient.UserClient, groupRepo repositories.GroupRepository, hub *ws.Hub) *ChatHandler {
+func NewChatHandler(chatRepo repositories.ChatRepository, messageRepo repositories.MessageRepository, userClient userClient, groupRepo repositories.GroupRepository, hub *ws.Hub) *ChatHandler {
 	return &ChatHandler{
 		chatRepo:    chatRepo,
 		messageRepo: messageRepo,

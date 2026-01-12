@@ -7,7 +7,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	grpcclient "chat-service/internal/grpc"
 	"chat-service/internal/models"
 	"chat-service/internal/repositories"
 	"chat-service/internal/ws"
@@ -17,12 +16,12 @@ import (
 type GroupHandler struct {
 	groupRepo   repositories.GroupRepository
 	messageRepo repositories.GroupMessageRepository
-	userClient  *grpcclient.UserClient
+	userClient  userClient
 	hub         *ws.Hub
 }
 
 // NewGroupHandler constructs a GroupHandler.
-func NewGroupHandler(groupRepo repositories.GroupRepository, messageRepo repositories.GroupMessageRepository, userClient *grpcclient.UserClient, hub *ws.Hub) *GroupHandler {
+func NewGroupHandler(groupRepo repositories.GroupRepository, messageRepo repositories.GroupMessageRepository, userClient userClient, hub *ws.Hub) *GroupHandler {
 	return &GroupHandler{
 		groupRepo:   groupRepo,
 		messageRepo: messageRepo,
