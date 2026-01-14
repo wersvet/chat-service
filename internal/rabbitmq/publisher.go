@@ -94,9 +94,9 @@ type noopPublisher struct {
 
 func (noopPublisher) Publish(ctx context.Context, routingKey string, event any) error {
 	switch envelope := event.(type) {
-	case telemetry.AuditEnvelope:
+	case telemetry.Envelope:
 		log.Printf("rabbitmq noop publish routing_key=%s event_type=%s service=%s request_id=%s", routingKey, envelope.EventType, envelope.Service, envelope.RequestID)
-	case *telemetry.AuditEnvelope:
+	case *telemetry.Envelope:
 		log.Printf("rabbitmq noop publish routing_key=%s event_type=%s service=%s request_id=%s", routingKey, envelope.EventType, envelope.Service, envelope.RequestID)
 	default:
 		log.Printf("rabbitmq noop publish routing_key=%s", routingKey)

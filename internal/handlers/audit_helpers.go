@@ -24,16 +24,26 @@ func requestIDFromContext(c *gin.Context) string {
 	return requestID
 }
 
-func userIDFromContext(c *gin.Context) *string {
+func userIDFromContext(c *gin.Context) *int64 {
 	if val, ok := c.Get("userID"); ok {
-		if userID, ok := val.(int); ok && userID != 0 {
-			text := strconv.Itoa(userID)
-			return &text
+		switch userID := val.(type) {
+		case int:
+			if userID != 0 {
+				value := int64(userID)
+				return &value
+			}
+		case int64:
+			if userID != 0 {
+				value := userID
+				return &value
+			}
 		}
 	}
 
 	if header := c.GetHeader("X-User-ID"); header != "" {
-		return &header
+		if parsed, err := strconv.ParseInt(header, 10, 64); err == nil {
+			return &parsed
+		}
 	}
 
 	return nil
