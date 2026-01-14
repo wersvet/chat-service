@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"net/url"
 	"os"
 
 	"github.com/gin-gonic/gin"
@@ -15,7 +16,9 @@ import (
 	grpcclient "chat-service/internal/grpc"
 	"chat-service/internal/handlers"
 	"chat-service/internal/middleware"
+	"chat-service/internal/rabbitmq"
 	"chat-service/internal/repositories"
+	"chat-service/internal/telemetry"
 	"chat-service/internal/ws"
 )
 
@@ -50,8 +53,23 @@ func main() {
 
 	hub := ws.NewHub()
 
-	chatHandler := handlers.NewChatHandler(chatRepo, messageRepo, userClient, groupRepo, hub)
-	groupHandler := handlers.NewGroupHandler(groupRepo, groupMessageRepo, userClient, hub)
+	amqpURL := getEnv("AMQP_URL", "amqp://guest:guest@localhost:5672/")
+	exchange := getEnv("LOGS_EXCHANGE", "logs.events")
+	serviceName := getEnv("SERVICE_NAME", "chat-service")
+	environment := getEnv("ENVIRONMENT", "local")
+	publisher := rabbitmq.NewPublisher(amqpURL, exchange)
+	defer publisher.Close()
+
+	log.Printf("rabbitmq publisher mode: %s", rabbitmq.PublisherMode(publisher))
+	log.Printf("rabbitmq config exchange=%s amqp_url=%s service=%s environment=%s", exchange, sanitizeAmqpURL(amqpURL), serviceName, environment)
+	if rabbitmq.PublisherMode(publisher) == "noop" {
+		log.Printf("rabbitmq noop reason: %s", rabbitmq.PublisherNoopReason(publisher))
+	}
+
+	auditEmitter := telemetry.NewAuditEmitter(publisher, "chat-service.audit", serviceName, environment)
+
+	chatHandler := handlers.NewChatHandler(chatRepo, messageRepo, userClient, groupRepo, hub, auditEmitter)
+	groupHandler := handlers.NewGroupHandler(groupRepo, groupMessageRepo, userClient, hub, auditEmitter)
 
 	chatWS := ws.NewChatWebSocketHandler(hub, chatRepo, authClient)
 	groupWS := ws.NewGroupWebSocketHandler(hub, groupRepo, authClient)
@@ -77,6 +95,8 @@ func main() {
 	router.POST("/groups/:group_id/messages", authMiddleware, groupHandler.PostGroupMessage)
 	router.DELETE("/groups/:group_id/messages/:message_id/all", authMiddleware, groupHandler.DeleteGroupMessageForAll)
 
+	handlers.RegisterDebugRoutes(router, auditEmitter, environment == "local")
+
 	router.GET("/ws/chats/:chat_id", chatWS.Handle)
 	router.GET("/ws/groups/:group_id", groupWS.Handle)
 
@@ -91,4 +111,19 @@ func getEnv(key, fallback string) string {
 		return val
 	}
 	return fallback
+}
+
+func sanitizeAmqpURL(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	if parsed.User != nil {
+		username := parsed.User.Username()
+		parsed.User = url.User(username)
+	}
+	return parsed.String()
 }

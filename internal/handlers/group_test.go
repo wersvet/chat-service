@@ -33,7 +33,7 @@ func TestCreateGroupSuccess(t *testing.T) {
 	groupRepo := new(mocks.GroupRepositoryMock)
 	messageRepo := new(mocks.GroupMessageRepositoryMock)
 	userClient := new(mocks.UserClientMock)
-	handler := NewGroupHandler(groupRepo, messageRepo, userClient, nil)
+	handler := NewGroupHandler(groupRepo, messageRepo, userClient, nil, nil)
 	router := setupGroupRouter(handler)
 
 	body := bytes.NewBufferString(`{"name":"test","member_ids":[2]}`)
@@ -51,7 +51,7 @@ func TestCreateGroupSuccess(t *testing.T) {
 }
 
 func TestCreateGroupInvalidBody(t *testing.T) {
-	handler := NewGroupHandler(new(mocks.GroupRepositoryMock), new(mocks.GroupMessageRepositoryMock), new(mocks.UserClientMock), nil)
+	handler := NewGroupHandler(new(mocks.GroupRepositoryMock), new(mocks.GroupMessageRepositoryMock), new(mocks.UserClientMock), nil, nil)
 	router := setupGroupRouter(handler)
 
 	req := httptest.NewRequest(http.MethodPost, "/groups", bytes.NewBufferString(`{"name":5}`))
@@ -65,7 +65,7 @@ func TestGetGroupMessagesSuccess(t *testing.T) {
 	groupRepo := new(mocks.GroupRepositoryMock)
 	messageRepo := new(mocks.GroupMessageRepositoryMock)
 	userClient := new(mocks.UserClientMock)
-	handler := NewGroupHandler(groupRepo, messageRepo, userClient, nil)
+	handler := NewGroupHandler(groupRepo, messageRepo, userClient, nil, nil)
 	router := setupGroupRouter(handler)
 
 	groupRepo.On("IsMember", mock.Anything, 9, 1).Return(true, nil).Once()
@@ -83,7 +83,7 @@ func TestGetGroupMessagesSuccess(t *testing.T) {
 }
 
 func TestGetGroupMessagesInvalidID(t *testing.T) {
-	handler := NewGroupHandler(new(mocks.GroupRepositoryMock), new(mocks.GroupMessageRepositoryMock), new(mocks.UserClientMock), nil)
+	handler := NewGroupHandler(new(mocks.GroupRepositoryMock), new(mocks.GroupMessageRepositoryMock), new(mocks.UserClientMock), nil, nil)
 	router := setupGroupRouter(handler)
 
 	req := httptest.NewRequest(http.MethodGet, "/groups/bad/messages", nil)
@@ -97,7 +97,7 @@ func TestPostGroupMessageSuccess(t *testing.T) {
 	groupRepo := new(mocks.GroupRepositoryMock)
 	messageRepo := new(mocks.GroupMessageRepositoryMock)
 	hub := ws.NewHub()
-	handler := NewGroupHandler(groupRepo, messageRepo, nil, hub)
+	handler := NewGroupHandler(groupRepo, messageRepo, nil, hub, nil)
 	router := setupGroupRouter(handler)
 
 	groupRepo.On("IsMember", mock.Anything, 9, 1).Return(true, nil).Once()
@@ -113,7 +113,7 @@ func TestPostGroupMessageSuccess(t *testing.T) {
 }
 
 func TestPostGroupMessageInvalidID(t *testing.T) {
-	handler := NewGroupHandler(new(mocks.GroupRepositoryMock), new(mocks.GroupMessageRepositoryMock), nil, ws.NewHub())
+	handler := NewGroupHandler(new(mocks.GroupRepositoryMock), new(mocks.GroupMessageRepositoryMock), nil, ws.NewHub(), nil)
 	router := setupGroupRouter(handler)
 
 	req := httptest.NewRequest(http.MethodPost, "/groups/abc/messages", bytes.NewBufferString(`{"content":"hey"}`))
