@@ -11,6 +11,7 @@ import (
 
 	"chat-service/internal/models"
 	"chat-service/internal/repositories"
+	"chat-service/internal/telemetry"
 	"chat-service/internal/ws"
 	userpb "chat-service/pb/user"
 )
@@ -27,16 +28,18 @@ type ChatHandler struct {
 	userClient  userClient
 	groupRepo   repositories.GroupRepository
 	hub         *ws.Hub
+	audit       *telemetry.AuditEmitter
 }
 
 // NewChatHandler builds a ChatHandler.
-func NewChatHandler(chatRepo repositories.ChatRepository, messageRepo repositories.MessageRepository, userClient userClient, groupRepo repositories.GroupRepository, hub *ws.Hub) *ChatHandler {
+func NewChatHandler(chatRepo repositories.ChatRepository, messageRepo repositories.MessageRepository, userClient userClient, groupRepo repositories.GroupRepository, hub *ws.Hub, audit *telemetry.AuditEmitter) *ChatHandler {
 	return &ChatHandler{
 		chatRepo:    chatRepo,
 		messageRepo: messageRepo,
 		userClient:  userClient,
 		groupRepo:   groupRepo,
 		hub:         hub,
+		audit:       audit,
 	}
 }
 
@@ -115,6 +118,7 @@ func (h *ChatHandler) StartChat(c *gin.Context) {
 		FriendID int `json:"friend_id" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
+		h.emitAudit(c, "ERROR", "invalid request payload")
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -137,10 +141,12 @@ func (h *ChatHandler) StartChat(c *gin.Context) {
 
 	chat, err := h.chatRepo.CreateOrGetChat(c.Request.Context(), userID, req.FriendID)
 	if err != nil {
+		h.emitAudit(c, "ERROR", "internal error")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not create chat"})
 		return
 	}
 
+	h.emitAudit(c, "INFO", "Chat started with '"+strconv.Itoa(req.FriendID)+"'")
 	c.JSON(http.StatusOK, gin.H{"chat_id": chat.ID})
 }
 
@@ -216,10 +222,16 @@ func (h *ChatHandler) PostChatMessage(c *gin.Context) {
 		if errors.Is(err, repositories.ErrChatNotFound) {
 			status = http.StatusNotFound
 		}
+		if status == http.StatusNotFound {
+			h.emitAudit(c, "ERROR", "chat not found")
+		} else if status == http.StatusInternalServerError {
+			h.emitAudit(c, "ERROR", "internal error")
+		}
 		c.JSON(status, gin.H{"error": "chat not found"})
 		return
 	}
 	if !isChatParticipant(chat, userID) {
+		h.emitAudit(c, "ERROR", "not allowed")
 		c.JSON(http.StatusForbidden, gin.H{"error": "not a chat member"})
 		return
 	}
@@ -228,12 +240,14 @@ func (h *ChatHandler) PostChatMessage(c *gin.Context) {
 		Content string `json:"content" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
+		h.emitAudit(c, "ERROR", "invalid request payload")
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
 	msg, err := h.messageRepo.CreateChatMessage(c.Request.Context(), chatID, userID, req.Content)
 	if err != nil {
+		h.emitAudit(c, "ERROR", "internal error")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to store message"})
 		return
 	}
@@ -243,6 +257,7 @@ func (h *ChatHandler) PostChatMessage(c *gin.Context) {
 	h.chatRepo.UnhideChatForUser(c.Request.Context(), chatID, chat.User2ID)
 
 	h.hub.BroadcastChatMessage(chatID, msg)
+	h.emitAudit(c, "INFO", "Message sent")
 	c.JSON(http.StatusCreated, msg)
 }
 
@@ -310,10 +325,16 @@ func (h *ChatHandler) DeleteMessageForAll(c *gin.Context) {
 		if errors.Is(err, repositories.ErrChatNotFound) {
 			status = http.StatusNotFound
 		}
+		if status == http.StatusNotFound {
+			h.emitAudit(c, "ERROR", "chat not found")
+		} else {
+			h.emitAudit(c, "ERROR", "internal error")
+		}
 		c.JSON(status, gin.H{"error": "chat not found"})
 		return
 	}
 	if !isChatParticipant(chat, userID) {
+		h.emitAudit(c, "ERROR", "not allowed")
 		c.JSON(http.StatusForbidden, gin.H{"error": "not allowed"})
 		return
 	}
@@ -324,6 +345,11 @@ func (h *ChatHandler) DeleteMessageForAll(c *gin.Context) {
 		if errors.Is(err, repositories.ErrMessageNotFound) {
 			status = http.StatusNotFound
 		}
+		if status == http.StatusNotFound {
+			h.emitAudit(c, "ERROR", "message not found")
+		} else if status == http.StatusInternalServerError {
+			h.emitAudit(c, "ERROR", "internal error")
+		}
 		c.JSON(status, gin.H{"error": "message not found"})
 		return
 	}
@@ -332,6 +358,7 @@ func (h *ChatHandler) DeleteMessageForAll(c *gin.Context) {
 		return
 	}
 	if msg.SenderID != userID {
+		h.emitAudit(c, "ERROR", "not allowed")
 		c.JSON(http.StatusForbidden, gin.H{"error": "only sender can delete for all"})
 		return
 	}
@@ -341,11 +368,17 @@ func (h *ChatHandler) DeleteMessageForAll(c *gin.Context) {
 		if errors.Is(err, repositories.ErrMessageNotFound) {
 			status = http.StatusNotFound
 		}
+		if status == http.StatusNotFound {
+			h.emitAudit(c, "ERROR", "message not found")
+		} else {
+			h.emitAudit(c, "ERROR", "internal error")
+		}
 		c.JSON(status, gin.H{"error": "could not delete message"})
 		return
 	}
 
 	h.hub.BroadcastDeletion(chatID, messageID)
+	h.emitAudit(c, "INFO", "Message deleted for all")
 	c.Status(http.StatusNoContent)
 }
 
@@ -378,6 +411,13 @@ func (h *ChatHandler) DeleteChatForMe(c *gin.Context) {
 	}
 
 	c.Status(http.StatusNoContent)
+}
+
+func (h *ChatHandler) emitAudit(c *gin.Context, level, text string) {
+	if h.audit == nil {
+		return
+	}
+	h.audit.Emit(c.Request.Context(), level, text, requestIDFromContext(c), userIDFromContext(c))
 }
 
 func parseIDs(c *gin.Context) (int, int, bool) {

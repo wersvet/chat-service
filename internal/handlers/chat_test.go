@@ -14,6 +14,7 @@ import (
 
 	"chat-service/internal/mocks"
 	"chat-service/internal/models"
+	"chat-service/internal/telemetry"
 	"chat-service/internal/ws"
 	userpb "chat-service/pb/user"
 )
@@ -29,6 +30,7 @@ func setupChatRouter(handler *ChatHandler) *gin.Engine {
 	r.POST("/chats/start", handler.StartChat)
 	r.GET("/chats/:chat_id/messages", handler.GetChatMessages)
 	r.POST("/chats/:chat_id/messages", handler.PostChatMessage)
+	r.DELETE("/chats/:chat_id/messages/:message_id/all", handler.DeleteMessageForAll)
 	return r
 }
 
@@ -36,7 +38,7 @@ func TestListChatsSuccess(t *testing.T) {
 	chatRepo := new(mocks.ChatRepositoryMock)
 	groupRepo := new(mocks.GroupRepositoryMock)
 	userClient := new(mocks.UserClientMock)
-	handler := NewChatHandler(chatRepo, nil, userClient, groupRepo, nil)
+	handler := NewChatHandler(chatRepo, nil, userClient, groupRepo, nil, nil)
 	router := setupChatRouter(handler)
 
 	chatRepo.On("ListChats", mock.Anything, 1).Return([]models.ChatSummary{{ChatID: 3, FriendID: 2}}, nil).Once()
@@ -58,7 +60,7 @@ func TestListChatsSuccess(t *testing.T) {
 
 func TestListChatsRepoError(t *testing.T) {
 	chatRepo := new(mocks.ChatRepositoryMock)
-	handler := NewChatHandler(chatRepo, nil, new(mocks.UserClientMock), new(mocks.GroupRepositoryMock), nil)
+	handler := NewChatHandler(chatRepo, nil, new(mocks.UserClientMock), new(mocks.GroupRepositoryMock), nil, nil)
 	router := setupChatRouter(handler)
 
 	chatRepo.On("ListChats", mock.Anything, 1).Return(([]models.ChatSummary)(nil), assert.AnError).Once()
@@ -74,26 +76,35 @@ func TestListChatsRepoError(t *testing.T) {
 func TestStartChatSuccess(t *testing.T) {
 	chatRepo := new(mocks.ChatRepositoryMock)
 	userClient := new(mocks.UserClientMock)
-	handler := NewChatHandler(chatRepo, nil, userClient, new(mocks.GroupRepositoryMock), nil)
+	publisher := new(mocks.PublisherMock)
+	emitter := telemetry.NewAuditEmitter(publisher, "chat-service.audit", "chat-service", "local")
+	handler := NewChatHandler(chatRepo, nil, userClient, new(mocks.GroupRepositoryMock), nil, emitter)
 	router := setupChatRouter(handler)
 
 	body := bytes.NewBufferString(`{"friend_id":2}`)
 
 	userClient.On("AreFriends", mock.Anything, 1, 2).Return(true, nil).Once()
 	chatRepo.On("CreateOrGetChat", mock.Anything, 1, 2).Return(models.Chat{ID: 10}, nil).Once()
+	publisher.On("Publish", mock.Anything, "chat-service.audit", mock.MatchedBy(func(event any) bool {
+		envelope, ok := event.(telemetry.AuditEnvelope)
+		return ok && envelope.EventType == "audit_log" && envelope.RequestID == "req-123"
+	})).Return(nil).Once()
 
 	req := httptest.NewRequest(http.MethodPost, "/chats/start", body)
+	req.Header.Set("X-Request-ID", "req-123")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	userClient.AssertExpectations(t)
 	chatRepo.AssertExpectations(t)
+	publisher.AssertExpectations(t)
+	publisher.AssertNumberOfCalls(t, "Publish", 1)
 }
 
 func TestStartChatFriendCheckError(t *testing.T) {
 	userClient := new(mocks.UserClientMock)
-	handler := NewChatHandler(new(mocks.ChatRepositoryMock), nil, userClient, new(mocks.GroupRepositoryMock), nil)
+	handler := NewChatHandler(new(mocks.ChatRepositoryMock), nil, userClient, new(mocks.GroupRepositoryMock), nil, nil)
 	router := setupChatRouter(handler)
 
 	userClient.On("AreFriends", mock.Anything, 1, 5).Return(false, assert.AnError).Once()
@@ -110,7 +121,7 @@ func TestGetChatMessagesSuccess(t *testing.T) {
 	chatRepo := new(mocks.ChatRepositoryMock)
 	messageRepo := new(mocks.MessageRepositoryMock)
 	userClient := new(mocks.UserClientMock)
-	handler := NewChatHandler(chatRepo, messageRepo, userClient, nil, nil)
+	handler := NewChatHandler(chatRepo, messageRepo, userClient, nil, nil, nil)
 	router := setupChatRouter(handler)
 
 	messageRepo.On("GetChatMessagesForUser", mock.Anything, 5, 1).Return([]models.Message{{ID: 1, ChatID: 5, SenderID: 1}}, nil).Once()
@@ -128,7 +139,7 @@ func TestGetChatMessagesSuccess(t *testing.T) {
 }
 
 func TestGetChatMessagesInvalidID(t *testing.T) {
-	handler := NewChatHandler(new(mocks.ChatRepositoryMock), new(mocks.MessageRepositoryMock), new(mocks.UserClientMock), nil, nil)
+	handler := NewChatHandler(new(mocks.ChatRepositoryMock), new(mocks.MessageRepositoryMock), new(mocks.UserClientMock), nil, nil, nil)
 	router := setupChatRouter(handler)
 
 	req := httptest.NewRequest(http.MethodGet, "/chats/abc/messages", nil)
@@ -142,15 +153,22 @@ func TestPostChatMessageSuccess(t *testing.T) {
 	chatRepo := new(mocks.ChatRepositoryMock)
 	messageRepo := new(mocks.MessageRepositoryMock)
 	hub := ws.NewHub()
-	handler := NewChatHandler(chatRepo, messageRepo, nil, nil, hub)
+	publisher := new(mocks.PublisherMock)
+	emitter := telemetry.NewAuditEmitter(publisher, "chat-service.audit", "chat-service", "local")
+	handler := NewChatHandler(chatRepo, messageRepo, nil, nil, hub, emitter)
 	router := setupChatRouter(handler)
 
 	chatRepo.On("GetChat", mock.Anything, 5).Return(models.Chat{ID: 5, User1ID: 1, User2ID: 2}, nil).Once()
 	messageRepo.On("CreateChatMessage", mock.Anything, 5, 1, "hi").Return(models.Message{ID: 7, ChatID: 5, SenderID: 1, Content: "hi"}, nil).Once()
 	chatRepo.On("UnhideChatForUser", mock.Anything, 5, 1).Return(nil).Once()
 	chatRepo.On("UnhideChatForUser", mock.Anything, 5, 2).Return(nil).Once()
+	publisher.On("Publish", mock.Anything, "chat-service.audit", mock.MatchedBy(func(event any) bool {
+		envelope, ok := event.(telemetry.AuditEnvelope)
+		return ok && envelope.EventType == "audit_log" && envelope.RequestID == "req-456"
+	})).Return(nil).Once()
 
 	req := httptest.NewRequest(http.MethodPost, "/chats/5/messages", bytes.NewBufferString(`{"content":"hi"}`))
+	req.Header.Set("X-Request-ID", "req-456")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -158,10 +176,12 @@ func TestPostChatMessageSuccess(t *testing.T) {
 	chatRepo.AssertExpectations(t)
 	messageRepo.AssertExpectations(t)
 	assert.NotNil(t, hub)
+	publisher.AssertExpectations(t)
+	publisher.AssertNumberOfCalls(t, "Publish", 1)
 }
 
 func TestPostChatMessageInvalidID(t *testing.T) {
-	handler := NewChatHandler(new(mocks.ChatRepositoryMock), new(mocks.MessageRepositoryMock), nil, nil, ws.NewHub())
+	handler := NewChatHandler(new(mocks.ChatRepositoryMock), new(mocks.MessageRepositoryMock), nil, nil, ws.NewHub(), nil)
 	router := setupChatRouter(handler)
 
 	req := httptest.NewRequest(http.MethodPost, "/chats/bad/messages", bytes.NewBufferString(`{"content":"hi"}`))
@@ -169,4 +189,54 @@ func TestPostChatMessageInvalidID(t *testing.T) {
 	router.ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestStartChatInvalidPayloadEmitsAudit(t *testing.T) {
+	publisher := new(mocks.PublisherMock)
+	emitter := telemetry.NewAuditEmitter(publisher, "chat-service.audit", "chat-service", "local")
+	handler := NewChatHandler(new(mocks.ChatRepositoryMock), nil, new(mocks.UserClientMock), new(mocks.GroupRepositoryMock), nil, emitter)
+	router := setupChatRouter(handler)
+
+	publisher.On("Publish", mock.Anything, "chat-service.audit", mock.MatchedBy(func(event any) bool {
+		envelope, ok := event.(telemetry.AuditEnvelope)
+		return ok && envelope.EventType == "audit_log" && envelope.RequestID == "req-789"
+	})).Return(nil).Once()
+
+	req := httptest.NewRequest(http.MethodPost, "/chats/start", bytes.NewBufferString(`{"friend_id":"bad"}`))
+	req.Header.Set("X-Request-ID", "req-789")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	publisher.AssertExpectations(t)
+	publisher.AssertNumberOfCalls(t, "Publish", 1)
+}
+
+func TestDeleteMessageForAllEmitsAudit(t *testing.T) {
+	chatRepo := new(mocks.ChatRepositoryMock)
+	messageRepo := new(mocks.MessageRepositoryMock)
+	hub := ws.NewHub()
+	publisher := new(mocks.PublisherMock)
+	emitter := telemetry.NewAuditEmitter(publisher, "chat-service.audit", "chat-service", "local")
+	handler := NewChatHandler(chatRepo, messageRepo, nil, nil, hub, emitter)
+	router := setupChatRouter(handler)
+
+	chatRepo.On("GetChat", mock.Anything, 5).Return(models.Chat{ID: 5, User1ID: 1, User2ID: 2}, nil).Once()
+	messageRepo.On("GetMessage", mock.Anything, 9).Return(models.Message{ID: 9, ChatID: 5, SenderID: 1}, nil).Once()
+	messageRepo.On("DeleteMessageForAll", mock.Anything, 9, 1).Return(nil).Once()
+	publisher.On("Publish", mock.Anything, "chat-service.audit", mock.MatchedBy(func(event any) bool {
+		envelope, ok := event.(telemetry.AuditEnvelope)
+		return ok && envelope.EventType == "audit_log" && envelope.RequestID == "req-000"
+	})).Return(nil).Once()
+
+	req := httptest.NewRequest(http.MethodDelete, "/chats/5/messages/9/all", nil)
+	req.Header.Set("X-Request-ID", "req-000")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	chatRepo.AssertExpectations(t)
+	messageRepo.AssertExpectations(t)
+	publisher.AssertExpectations(t)
+	publisher.AssertNumberOfCalls(t, "Publish", 1)
 }

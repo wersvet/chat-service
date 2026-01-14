@@ -9,6 +9,7 @@ import (
 
 	"chat-service/internal/models"
 	"chat-service/internal/repositories"
+	"chat-service/internal/telemetry"
 	"chat-service/internal/ws"
 )
 
@@ -18,15 +19,17 @@ type GroupHandler struct {
 	messageRepo repositories.GroupMessageRepository
 	userClient  userClient
 	hub         *ws.Hub
+	audit       *telemetry.AuditEmitter
 }
 
 // NewGroupHandler constructs a GroupHandler.
-func NewGroupHandler(groupRepo repositories.GroupRepository, messageRepo repositories.GroupMessageRepository, userClient userClient, hub *ws.Hub) *GroupHandler {
+func NewGroupHandler(groupRepo repositories.GroupRepository, messageRepo repositories.GroupMessageRepository, userClient userClient, hub *ws.Hub, audit *telemetry.AuditEmitter) *GroupHandler {
 	return &GroupHandler{
 		groupRepo:   groupRepo,
 		messageRepo: messageRepo,
 		userClient:  userClient,
 		hub:         hub,
+		audit:       audit,
 	}
 }
 
@@ -39,6 +42,7 @@ func (h *GroupHandler) CreateGroup(c *gin.Context) {
 		MemberIDs []int  `json:"member_ids"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
+		h.emitAudit(c, "ERROR", "invalid request payload")
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -53,10 +57,12 @@ func (h *GroupHandler) CreateGroup(c *gin.Context) {
 
 	group, err := h.groupRepo.CreateGroup(c.Request.Context(), userID, req.Name, req.MemberIDs)
 	if err != nil {
+		h.emitAudit(c, "ERROR", "internal error")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not create group"})
 		return
 	}
 
+	h.emitAudit(c, "INFO", "Group created")
 	c.JSON(http.StatusCreated, gin.H{"group_id": group.ID})
 }
 
@@ -82,10 +88,12 @@ func (h *GroupHandler) GetGroupMessages(c *gin.Context) {
 	userID := c.GetInt("userID")
 	member, err := h.groupRepo.IsMember(c.Request.Context(), groupID, userID)
 	if err != nil {
+		h.emitAudit(c, "ERROR", "internal error")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "membership check failed"})
 		return
 	}
 	if !member {
+		h.emitAudit(c, "ERROR", "not allowed")
 		c.JSON(http.StatusForbidden, gin.H{"error": "not a member"})
 		return
 	}
@@ -141,10 +149,12 @@ func (h *GroupHandler) PostGroupMessage(c *gin.Context) {
 	userID := c.GetInt("userID")
 	member, err := h.groupRepo.IsMember(c.Request.Context(), groupID, userID)
 	if err != nil {
+		h.emitAudit(c, "ERROR", "internal error")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "membership check failed"})
 		return
 	}
 	if !member {
+		h.emitAudit(c, "ERROR", "not allowed")
 		c.JSON(http.StatusForbidden, gin.H{"error": "not a member"})
 		return
 	}
@@ -153,17 +163,20 @@ func (h *GroupHandler) PostGroupMessage(c *gin.Context) {
 		Content string `json:"content" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
+		h.emitAudit(c, "ERROR", "invalid request payload")
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
 	msg, err := h.messageRepo.CreateGroupMessage(c.Request.Context(), groupID, userID, req.Content)
 	if err != nil {
+		h.emitAudit(c, "ERROR", "internal error")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to store message"})
 		return
 	}
 
 	h.hub.BroadcastGroupMessage(groupID, msg)
+	h.emitAudit(c, "INFO", "Group message sent")
 	c.JSON(http.StatusCreated, msg)
 }
 
@@ -177,10 +190,12 @@ func (h *GroupHandler) DeleteGroupMessageForAll(c *gin.Context) {
 	userID := c.GetInt("userID")
 	member, err := h.groupRepo.IsMember(c.Request.Context(), groupID, userID)
 	if err != nil {
+		h.emitAudit(c, "ERROR", "internal error")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "membership check failed"})
 		return
 	}
 	if !member {
+		h.emitAudit(c, "ERROR", "not allowed")
 		c.JSON(http.StatusForbidden, gin.H{"error": "not a member"})
 		return
 	}
@@ -191,6 +206,11 @@ func (h *GroupHandler) DeleteGroupMessageForAll(c *gin.Context) {
 		if errors.Is(err, repositories.ErrMessageNotFound) {
 			status = http.StatusNotFound
 		}
+		if status == http.StatusNotFound {
+			h.emitAudit(c, "ERROR", "message not found")
+		} else {
+			h.emitAudit(c, "ERROR", "internal error")
+		}
 		c.JSON(status, gin.H{"error": "message not found"})
 		return
 	}
@@ -199,6 +219,7 @@ func (h *GroupHandler) DeleteGroupMessageForAll(c *gin.Context) {
 		return
 	}
 	if msg.SenderID != userID {
+		h.emitAudit(c, "ERROR", "not allowed")
 		c.JSON(http.StatusForbidden, gin.H{"error": "only sender may delete"})
 		return
 	}
@@ -208,12 +229,25 @@ func (h *GroupHandler) DeleteGroupMessageForAll(c *gin.Context) {
 		if errors.Is(err, repositories.ErrMessageNotFound) {
 			status = http.StatusNotFound
 		}
+		if status == http.StatusNotFound {
+			h.emitAudit(c, "ERROR", "message not found")
+		} else {
+			h.emitAudit(c, "ERROR", "internal error")
+		}
 		c.JSON(status, gin.H{"error": "could not delete"})
 		return
 	}
 
 	h.hub.BroadcastGroupDeletion(groupID, messageID)
+	h.emitAudit(c, "INFO", "Group message deleted for all")
 	c.Status(http.StatusNoContent)
+}
+
+func (h *GroupHandler) emitAudit(c *gin.Context, level, text string) {
+	if h.audit == nil {
+		return
+	}
+	h.audit.Emit(c.Request.Context(), level, text, requestIDFromContext(c), userIDFromContext(c))
 }
 
 func parseGroupIDs(c *gin.Context) (int, int, bool) {
